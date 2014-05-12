@@ -1,0 +1,102 @@
+-- Open Habitats 
+
+This is research code for synthesizing habitats polygons using open data
+from EU Corine and OpenStreetMap.  This produces output similar to the
+commercial Land Cover Map 2007 (LCM2007) dataset, but free of license
+restrictions.  This is significant if you want to distribute the data
+as part of a web application.
+
+
+-- Installation
+
+This assumes the underlying system is using Ubuntu 12.04.4 LTS.
+
+# install tools
+sudo apt-get install postgis
+sudo apt-get install python-shapely
+sudo apt-get install spatialite-bin
+sudo apt-get install python-pyproj
+sudo apt-get install osm2pgsql
+
+# setup database
+sudo -u postgres -i
+> createuser <user>
+> createdb -E UTF8 -O <user> gis
+> createlang plpgsql gis
+
+psql gis
+> \i /usr/share/postgresql/9.1/contrib/postgis-1.5/spatial_ref_sys.sql
+> \i clc.sql
+> \i habitats.sql
+
+# acquire OpenStreetMap data for area of interest
+# e.g. wget 'http://download.geofabrik.de/europe/great-britain-latest.osm.pbf'
+osm2pgsql -C 20000 -d gis -k great-britain-latest.osm.pbf
+
+# acquire and decompress EU Corine (clc06_spatialite.rar)
+# http://www.eea.europa.eu/data-and-maps/data/clc-2006-vector-data-version-3
+./load-corine.py clc2006_rel16.sqlite
+
+# break down the Corine polygons to allow tractable queries
+./tile-corine.py
+
+# sample grid points for Corine and OSM
+./compute-grid.py corine
+./compute-grid.py osm
+
+# compute the integral of the samples
+./compute-grid.py route data.routing
+
+# build base polygons from grid samples
+gcc -O2 -Wall route.c -o route
+./route data.routing > data.polygons
+
+# import polygons to database
+./build-polygons.py data.polygons
+
+# merge smaller polygons to form more
+./merge-habitats.py
+
+# compute connections between habitats
+./connect-habitats.py
+
+# render habitat polygons to JSON for use in web tools
+./output-habitats.py result.js
+
+
+-- LCM 2007 import and verification
+
+If you have access to LCM 2007 you can verify the similarity of the open data
+derivative against it.  This is typically about 80-90%.
+
+Import:
+ shp2pgsql -s 4326 -I -S -p LCM2007_polygon | psql gis
+ shp2pgsql -s 4326 -S -a LCM2007_polygon | psql gis
+
+Verify
+ ./compute-grid.py verify
+
+
+-- Tuning
+
+For tweaking the polygon merge process the whole import does not need
+to be performed again.
+
+Independent steps:
+1.
+  psql> UPDATE cell SET category = NULL;
+  ./compute-grid.py osm
+2.
+  ./compute-grid.py route data.routing
+  ./route data.routing > data.polygons
+3.
+  psql> DELETE FROM habitat_raw;
+  ./build-polygons.py data.polygons
+4.
+  psql> DELETE FROM habitat;
+  ./merge-habitats.py
+5.
+  psql> DELETE FROM habitat_link;
+  ./connect-habitats.py
+6.
+  ./output-habitats.py result.js
